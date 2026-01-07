@@ -79,8 +79,8 @@ static size_t jieba__character_space_size(size_t estimated_word_count) {
 }
 
 static size_t jieba__init_character_space(
-  size_t estimated_word_count, void *restrict whole_memory,
-  size_t whole_memory_used, struct jieba__data_base *root
+    size_t estimated_word_count, void *restrict whole_memory,
+    size_t whole_memory_used, struct jieba__data_base *root
 ) {
   size_t size = jieba__character_space_size(estimated_word_count);
   root->character_space_size = size;
