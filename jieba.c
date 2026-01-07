@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <string.h>
 #include "jieba.h"
+#include "wyhash.h"
 
 #define JIEBA_MAX_WORD_LENGTH 32
 #define JIEBA_ASSUME_AVERAGE_WORD_LENGTH 4
@@ -39,7 +40,7 @@ struct jieba__hash_table_node {
 
 struct jieba__hash_table {
   size_t count;
-  size_t size;
+  size_t size; /* buckets number */
   size_t max_cell_per_bucket;
   size_t first_node_pos;
 };
@@ -97,8 +98,8 @@ static size_t jieba__hash_table_cell_space_size(size_t estimated_word_count) {
 }
 
 static size_t jieba__init_hash_table_cell_space(
-  size_t estimated_word_count, void *restrict whole_memory,
-  size_t whole_memory_used, struct jieba__data_base *root
+    size_t estimated_word_count, void *restrict whole_memory,
+    size_t whole_memory_used, struct jieba__data_base *root
 ) {
   size_t size = jieba__hash_table_cell_space_size(estimated_word_count);
   root->hash_table_cell_space_size = size;
@@ -130,8 +131,8 @@ static size_t jieba__hash_table_node_space_size(size_t estimated_word_count) {
 }
 
 static size_t jieba__init_hash_table_node_space(
-  size_t estimated_word_count, void *restrict whole_memory,
-  size_t whole_memory_used, struct jieba__data_base *root
+    size_t estimated_word_count, void *restrict whole_memory,
+    size_t whole_memory_used, struct jieba__data_base *root
 ) {
   size_t size = jieba__hash_table_node_space_size(estimated_word_count);
   root->hash_table_node_space_size = size;
@@ -158,8 +159,8 @@ static size_t jieba__data_base_node_space_size() {
 }
 
 static size_t jieba__init_data_base_node_space(
-  void *restrict whole_memory, size_t whole_memory_used,
-  struct jieba__data_base *root
+    void *restrict whole_memory, size_t whole_memory_used,
+    struct jieba__data_base *root
 ) {
   size_t size = jieba__data_base_node_space_size();
   root->data_base_node_space_size = size;
@@ -176,6 +177,14 @@ static void jieba__init_data_base_node_free_list(
   for (size_t i = 0; i < count; i++)
     root->data_base_nodes[i].next_node_pos = i + 1;
   root->data_base_nodes[count - 1].next_node_pos = (size_t)-1;
+}
+
+size_t jieba_estimate_memory_size(size_t estimated_word_count) {
+  return sizeof(struct jieba__data_base)
+    + jieba__character_space_size(estimated_word_count)
+    + jieba__hash_table_cell_space_size(estimated_word_count)
+    + jieba__hash_table_node_space_size(estimated_word_count)
+    + jieba__data_base_node_space_size();
 }
 
 enum jieba_init_result
@@ -224,14 +233,20 @@ jieba_init_data_base(
   return JIEBA_INIT_SUCCESS;
 }
 
-static enum jieba_add_word_result
+enum jieba__mbtoc32be_result {
+  JIEBA__MBTOC32BE_SUCCESS,
+  JIEBA__MBTOC32BE_NO_ENOUGH_CHARACTER,
+  JIEBA__MBTOC32BE_BAD_UTF8,
+};
+
+static enum jieba__mbtoc32be_result
 jieba__mbtoc32be(
     const unsigned char *in, size_t in_len, struct jieba__utf32be *outchar,
     size_t *cvt_len
 ) {
   uint8_t *out = outchar->data;
 
-  if (in_len == 0) return JIEBA_ADD_WORD_NO_ENOUGH_CHARACTER;
+  if (in_len == 0) return JIEBA__MBTOC32BE_NO_ENOUGH_CHARACTER;
 
   uint32_t cp;
   uint8_t c = in[0];
@@ -241,69 +256,69 @@ jieba__mbtoc32be(
     assert(in_len >= 1);
     out[0]=0; out[1]=0; out[2]=0; out[3]=cp;
     *cvt_len = 1;
-    return JIEBA_ADD_WORD_SUCCESS;
+    return JIEBA__MBTOC32BE_SUCCESS;
   }
 
   if ((c & 0xE0) == 0xC0) {
-    if (in_len < 2) return JIEBA_ADD_WORD_NO_ENOUGH_CHARACTER;
-    if ((in[1] & 0xc0) != 0x80) return JIEBA_ADD_WORD_BAD_UTF8;
-    if (c < 0xC2) return JIEBA_ADD_WORD_BAD_UTF8;
+    if (in_len < 2) return JIEBA__MBTOC32BE_NO_ENOUGH_CHARACTER;
+    if ((in[1] & 0xc0) != 0x80) return JIEBA__MBTOC32BE_BAD_UTF8;
+    if (c < 0xC2) return JIEBA__MBTOC32BE_BAD_UTF8;
     cp = ((c & 0x1F) << 6)
        | (in[1] & 0x3F);
     out[0]=0; out[1]=0; out[2]=cp>>8; out[3]=cp;
     *cvt_len = 2;
-    return JIEBA_ADD_WORD_SUCCESS;
+    return JIEBA__MBTOC32BE_SUCCESS;
   }
 
   if ((c & 0xF0) == 0xE0) {
-    if (in_len < 3) return JIEBA_ADD_WORD_NO_ENOUGH_CHARACTER;
-    if ((in[1] & 0xc0) != 0x80) return JIEBA_ADD_WORD_BAD_UTF8;
-    if ((in[2] & 0xc0) != 0x80) return JIEBA_ADD_WORD_BAD_UTF8;
-    if (c == 0xE0 && in[1] < 0xA0) return JIEBA_ADD_WORD_BAD_UTF8;
-    if (c == 0xED && in[1] >= 0xA0) return JIEBA_ADD_WORD_BAD_UTF8;
+    if (in_len < 3) return JIEBA__MBTOC32BE_NO_ENOUGH_CHARACTER;
+    if ((in[1] & 0xc0) != 0x80) return JIEBA__MBTOC32BE_BAD_UTF8;
+    if ((in[2] & 0xc0) != 0x80) return JIEBA__MBTOC32BE_BAD_UTF8;
+    if (c == 0xE0 && in[1] < 0xA0) return JIEBA__MBTOC32BE_BAD_UTF8;
+    if (c == 0xED && in[1] >= 0xA0) return JIEBA__MBTOC32BE_BAD_UTF8;
     cp = ((c & 0x0F) << 12)
        | ((in[1] & 0x3F) << 6)
        | (in[2] & 0x3F);
     out[0]=0; out[1]=cp>>16; out[2]=cp>>8; out[3]=cp;
     *cvt_len = 3;
-    return JIEBA_ADD_WORD_SUCCESS;
+    return JIEBA__MBTOC32BE_SUCCESS;
   }
 
   if ((c & 0xF8) == 0xF0) {
-    if (in_len < 4) return JIEBA_ADD_WORD_NO_ENOUGH_CHARACTER;
-    if ((in[1] & 0xc0) != 0x80) return JIEBA_ADD_WORD_BAD_UTF8;
-    if ((in[2] & 0xc0) != 0x80) return JIEBA_ADD_WORD_BAD_UTF8;
-    if ((in[3] & 0xc0) != 0x80) return JIEBA_ADD_WORD_BAD_UTF8;
-    if (c == 0xF0 && in[1] < 0x90) return JIEBA_ADD_WORD_BAD_UTF8;
-    if (c == 0xF4 && in[1] > 0x8F) return JIEBA_ADD_WORD_BAD_UTF8;
-    if (c > 0xF4) return JIEBA_ADD_WORD_BAD_UTF8;
+    if (in_len < 4) return JIEBA__MBTOC32BE_NO_ENOUGH_CHARACTER;
+    if ((in[1] & 0xc0) != 0x80) return JIEBA__MBTOC32BE_BAD_UTF8;
+    if ((in[2] & 0xc0) != 0x80) return JIEBA__MBTOC32BE_BAD_UTF8;
+    if ((in[3] & 0xc0) != 0x80) return JIEBA__MBTOC32BE_BAD_UTF8;
+    if (c == 0xF0 && in[1] < 0x90) return JIEBA__MBTOC32BE_BAD_UTF8;
+    if (c == 0xF4 && in[1] > 0x8F) return JIEBA__MBTOC32BE_BAD_UTF8;
+    if (c > 0xF4) return JIEBA__MBTOC32BE_BAD_UTF8;
     cp = ((c & 0x07) << 18)
        | ((in[1] & 0x3F) << 12)
        | ((in[2] & 0x3F) << 6)
        | (in[3] & 0x3F);
     out[0]=cp>>24; out[1]=cp>>16; out[2]=cp>>8; out[3]=cp;
     *cvt_len = 4;
-    return JIEBA_ADD_WORD_SUCCESS;
+    return JIEBA__MBTOC32BE_SUCCESS;
   }
 
-  return JIEBA_ADD_WORD_BAD_UTF8;
+  return JIEBA__MBTOC32BE_BAD_UTF8;
 }
 
-static enum jieba_add_word_result
+static enum jieba__mbtoc32be_result
 jieba__mbtoc32bestr(
     const unsigned char *in, size_t in_len, struct jieba__utf32be *outstr,
     size_t *out_len
 ) {
   size_t i = 0, cvt_len;
-  enum jieba_add_word_result res;
+  enum jieba__mbtoc32be_result res;
 
   while (in_len != 0) {
     res = jieba__mbtoc32be(in, in_len, &outstr[i], &cvt_len);
-    if (res != JIEBA_ADD_WORD_SUCCESS) return res;
+    if (res != JIEBA__MBTOC32BE_SUCCESS) return res;
     in = &in[cvt_len]; in_len -= cvt_len; i += 1;
   }
   *out_len = i;
-  return JIEBA_ADD_WORD_SUCCESS;
+  return JIEBA__MBTOC32BE_SUCCESS;
 }
 
 static void jieba__init_hash_table(struct jieba__hash_table *table) {
@@ -325,16 +340,16 @@ static size_t jieba__allocate_data_base_node(
 
   nodes[new_pos].next_node_pos = -1;
   nodes[new_pos].n_chinese_letter = n_chinese_letter;
-  jieba__init_hash_table(&nodes[new_pos]);
+  jieba__init_hash_table(&nodes[new_pos].table);
   
   return new_pos;
 }
 
 static enum jieba_add_word_result
 jieba__find_data_base_node(
-  size_t word_size, size_t *data_base_node_first_free,
-  size_t *first_data_base_node_pos, struct jieba__data_base_node *nodes,
-  struct jieba__data_base *data_base, size_t *data_base_node_pos
+    size_t word_size, size_t *data_base_node_first_free,
+    size_t *first_data_base_node_pos, struct jieba__data_base_node *nodes,
+    struct jieba__data_base *data_base, size_t *data_base_node_pos
 ) {
   if (*first_data_base_node_pos == (size_t)-1 ||
       word_size > nodes[*first_data_base_node_pos].n_chinese_letter)
@@ -371,19 +386,341 @@ jieba__find_data_base_node(
   }
 }
 
-enum jieba_add_word_result
-jieba_add_word(
+static uint64_t jieba__hash(void *str, size_t size) {
+  return wyhash(str, size, 0, _wyp);
+}
+
+static uint64_t jieba__hash_u32bearr(struct jieba__utf32be *arr, size_t n) {
+  return jieba__hash(arr, sizeof(struct jieba__utf32be) * n);
+}
+
+static size_t
+jieba__allocate_hash_table_nodes(size_t N, struct jieba__data_base *data_base) {
+  if (N == 0) return (size_t)-1;
+
+  size_t *hash_table_node_first_free = &data_base->hash_table_node_first_free;
+  struct jieba__hash_table_node *nodes = data_base->hash_table_nodes;
+
+  size_t new_pos = *hash_table_node_first_free;
+  size_t last_pos = new_pos;
+  size_t new_free_pos = nodes[new_pos].next_node_pos;
+
+  for (size_t i = 1; i < N; i++) {
+    if (new_free_pos == (size_t)-1) return -1;
+    last_pos = new_free_pos;
+    new_free_pos = nodes[new_free_pos].next_node_pos;
+  }
+
+  *hash_table_node_first_free = new_free_pos;
+  nodes[last_pos].next_node_pos = (size_t)-1;
+
+  size_t pos = new_pos;
+  for (size_t i = 0; i < N; i++) {
+    for (size_t j = 0; j < JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER; j++) {
+      nodes[pos].buckets[j].count = 0;
+      nodes[pos].buckets[j].first_cell_pos = (size_t)-1;
+    }
+    pos = nodes[pos].next_node_pos;
+  }
+  return new_pos;
+}
+
+static void jieba__free_hash_table_node(
+    size_t pos, struct jieba__data_base *data_base
+) {
+  struct jieba__hash_table_node *nodes = data_base->hash_table_nodes;
+  nodes[pos].next_node_pos = data_base->hash_table_node_first_free;
+  data_base->hash_table_node_first_free = pos;
+}
+
+static size_t
+jieba__allocate_hash_table_cell(struct jieba__data_base *data_base) {
+  struct jieba__hash_table_cell *cells = data_base->hash_table_cells;
+  size_t *hash_table_cell_first_free = &data_base->hash_table_cell_first_free;
+
+  if (*hash_table_cell_first_free == (size_t)-1) return -1;
+
+  size_t new_pos = *hash_table_cell_first_free;
+  data_base->data_base_node_first_free = cells[new_pos].next_cell_pos;
+
+  cells[new_pos].next_cell_pos = -1;
+  cells[new_pos].hash = 0;
+  cells[new_pos].string.count = 0;
+
+  return new_pos;
+}
+
+static void jieba__free_hash_table_cell(
+    size_t pos, struct jieba__data_base *data_base
+) {
+  struct jieba__hash_table_cell *cells = data_base->hash_table_cells;
+  cells[pos].next_cell_pos = data_base->hash_table_cell_first_free;
+  data_base->hash_table_cell_first_free = pos;
+}
+
+static int jieba__init_and_allocate_string(
+    struct jieba__utf32be *contents, size_t contents_size,
+    struct jieba__data_base *data_base, struct jieba__string *string
+) {
+  size_t new_size = contents_size + data_base->character_space_used;
+  if (new_size < data_base->character_space_size)
+    return -1;
+  size_t strpos = data_base->character_space_used;
+  data_base->character_space_used += contents_size;
+  for (size_t i = 0; i < contents_size; i++)
+    data_base->characterp[strpos + i] = contents[i];
+  string->count = contents_size;
+  string->first_character_pos = strpos;
+  return 0;
+}
+
+/* primes */
+/* How could we give users the JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER macro if we use such a primes table? */
+const size_t jieba__hash_table_sizes[] = {
+  2039, 4093, 8179, 16369, 32749, 65497, 130987, 262007, 523997, 0
+};
+
+static void
+jieba__hash_table_extend_coerce_insert_cell(
+    size_t cell_pos, struct jieba__hash_table *table,
+    struct jieba__hash_table_cell *cells, struct jieba__hash_table_node *nodes
+) {
+  size_t hash = cells[cell_pos].hash;
+  size_t idx = hash % table->size;
+  size_t node_num = idx / JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER;
+  size_t bucket_num = idx % JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER;
+
+  size_t node_pos = table->first_node_pos;
+  while (node_num--) {
+    node_pos = nodes[node_pos].next_node_pos;
+  }
+
+  nodes[node_pos].buckets[bucket_num].count += 1;
+  cells[cell_pos].next_cell_pos =
+    nodes[node_pos].buckets[bucket_num].first_cell_pos;
+  nodes[node_pos].buckets[bucket_num].first_cell_pos = cell_pos;
+
+  table->count += 1;
+}
+
+static void
+jieba__hash_table_extend_coerce_insert_bucket(
+    struct jieba__hash_table_bucket *bucket, struct jieba__hash_table *table,
+    struct jieba__hash_table_cell *cells, struct jieba__hash_table_node *nodes
+) {
+  while (bucket->count-- > 0) {
+    size_t pos = bucket->first_cell_pos;
+    bucket->first_cell_pos = cells[pos].next_cell_pos;
+    jieba__hash_table_extend_coerce_insert_cell(pos, table, cells, nodes);
+  }
+}
+
+static int
+jieba__hash_table_extend(
+    struct jieba__hash_table *table, struct jieba__data_base *data_base,
+    struct jieba__hash_table_node *nodes
+) {
+  size_t original_size = table->size;
+  size_t size;
+  int got_size = 0;
+  for (size_t i = 0; jieba__hash_table_sizes[i] != 0; i++) {
+    if (original_size == jieba__hash_table_sizes[i]) {
+      size = jieba__hash_table_sizes[i + 1];
+      got_size = 1;
+      break;
+    }
+  }
+  if (!got_size) return -1;
+
+  size_t node_number = (size + JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER - 1)
+    / JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER;
+  size_t new_pos = jieba__allocate_hash_table_nodes(node_number, data_base);
+  if (new_pos == (size_t)-1) return -1;
+  
+  size_t old_node = table->first_node_pos;
+  size_t old_size = table->size;
+  table->count = 0;
+  table->size = size;
+  table->first_node_pos = new_pos;
+
+  while (old_node != -1) {
+    for (size_t i = 0; i < JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER; i++) {
+      jieba__hash_table_extend_coerce_insert_bucket(
+          &nodes[old_node].buckets[i], table, data_base->hash_table_cells, nodes
+      );
+    }
+    size_t next_node_pos = nodes[old_node].next_node_pos;
+    jieba__free_hash_table_node(old_node, data_base);
+    old_node = next_node_pos;
+  }
+  return 0;
+}
+
+enum jieba__bucket_find_or_add_cell_result {
+  JIEBA__BUCKET_FIND_OR_ADD_CELL_SUCCESS,
+  JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NOMEM,
+  JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NEED_EXTEND
+};
+
+int jieba__ensure_hash_table_has_node(
+    struct jieba__hash_table *table, struct jieba__data_base *data_base
+) {
+  if (table->size == 0) {
+    table->count = 0;
+    table->size = jieba__hash_table_sizes[0];
+    size_t new_pos = jieba__allocate_hash_table_nodes(1, data_base);
+    if (new_pos == (size_t)-1) return -1;
+    table->first_node_pos = new_pos;
+  }
+  return 0;
+}
+
+static enum jieba__bucket_find_or_add_cell_result
+jieba__bucket_find_or_add_cell(
+    struct jieba__utf32be *word, size_t word_size, uint64_t hash,
+    struct jieba__data_base *data_base, size_t tried_times,
+    struct jieba__hash_table *table, struct jieba__hash_table_bucket *bucket,
+    struct jieba__utf32be *characterp, struct jieba__hash_table_cell *cells,
+    int *does_change, size_t *cell_pos
+) {
+  if (bucket->count == 0) {
+    size_t new_pos = jieba__allocate_hash_table_cell(data_base);
+    if (new_pos == (size_t)-1) return JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NOMEM;
+
+    cells[new_pos].hash = hash;
+    int res = jieba__init_and_allocate_string(
+        word, word_size, data_base, &cells[new_pos].string
+    );
+    if (res != 0) {
+      jieba__free_hash_table_cell(new_pos, data_base);
+      return JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NOMEM;
+    }
+
+    bucket->count = 1;
+    bucket->first_cell_pos = new_pos;
+    table->count += 1;
+    *does_change = 1;
+    *cell_pos = new_pos;
+    return JIEBA__BUCKET_FIND_OR_ADD_CELL_SUCCESS;
+  } else {
+    size_t a_cell_pos = bucket->first_cell_pos;
+    size_t last_cell_pos = -1;
+    for (size_t i = 0; i < bucket->count; i++) {
+      size_t character_pos = cells[a_cell_pos].string.first_character_pos;
+
+      if (hash == cells[a_cell_pos].hash &&
+          !memcmp(
+            word, &characterp[character_pos],
+            sizeof(struct jieba__utf32be) * word_size
+          )
+      ) {
+        *does_change = 0;
+        *cell_pos = a_cell_pos;
+        return JIEBA__BUCKET_FIND_OR_ADD_CELL_SUCCESS;
+      }
+
+      last_cell_pos = a_cell_pos;
+      a_cell_pos = cells[a_cell_pos].next_cell_pos;
+    }
+
+    if (bucket->count == table->max_cell_per_bucket) {
+      if (tried_times == 0)
+        return JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NEED_EXTEND;
+      else
+        table->max_cell_per_bucket += 1;
+    }
+
+    size_t new_pos = jieba__allocate_hash_table_cell(data_base);
+    if (new_pos == (size_t)-1) return JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NOMEM;
+
+    cells[new_pos].hash = hash;
+    int res = jieba__init_and_allocate_string(
+        word, word_size, data_base, &cells[new_pos].string
+    );
+    if (res != 0) {
+      jieba__free_hash_table_cell(new_pos, data_base);
+      return JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NOMEM;
+    }
+
+    bucket->count += 1;
+    cells[last_cell_pos].next_cell_pos = new_pos;
+    table->count += 1;
+    *does_change = 1;
+    *cell_pos = new_pos;
+    return JIEBA__BUCKET_FIND_OR_ADD_CELL_SUCCESS;
+  }
+}
+
+static enum jieba_add_word_result
+jieba__hash_table_find_or_add_cell(
+    struct jieba__utf32be *word, size_t word_size, uint64_t hash,
+    struct jieba__data_base *data_base, struct jieba__hash_table *table,
+    int *does_change, size_t *cell_pos
+) {
+  if (jieba__ensure_hash_table_has_node(table, data_base) != 0)
+    return JIEBA_ADD_WORD_FAIL_NOMEM;
+
+  size_t tried_times = 0;
+  int need_extend = 0;
+
+  while (1) {
+    size_t idx = hash % table->size;
+    size_t node_num = idx / JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER;
+    size_t bucket_num = idx % JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER;
+
+    size_t node_pos = table->first_node_pos;
+    while (node_num--) {
+      node_pos = data_base->hash_table_nodes[node_pos].next_node_pos;
+    }
+
+    enum jieba__bucket_find_or_add_cell_result res;
+    res = jieba__bucket_find_or_add_cell(
+        word, word_size, hash, data_base, tried_times, table,
+        &data_base->hash_table_nodes[node_pos].buckets[bucket_num],
+        data_base->characterp, data_base->hash_table_cells, does_change,
+        cell_pos
+    );
+    switch (res) {
+    case JIEBA__BUCKET_FIND_OR_ADD_CELL_SUCCESS:
+      return JIEBA_ADD_WORD_SUCCESS;
+    case JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NEED_EXTEND:
+      need_extend = 1;
+      break;
+    case JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NOMEM:
+      return JIEBA_ADD_WORD_FAIL_NOMEM;
+    }
+
+    tried_times += 1;
+    assert(tried_times <= 1);
+
+    if (need_extend)
+      jieba__hash_table_extend(table, data_base, data_base->hash_table_nodes);
+  }
+}
+
+static enum jieba_add_word_result
+jieba__add_word(
     unsigned char *restrict word, size_t word_size,
-    struct jieba_data_base *restrict data_base
+    struct jieba__data_base *restrict data_base
 ) {
   struct jieba__utf32be c32str_cache[128];
   size_t c32str_cache_size = 0;
   enum jieba_add_word_result res;
 
-  res = jieba__mbtoc32bestr(
+  if (word_size == 0 || word_size == 1) return JIEBA_ADD_WORD_SUCCESS;
+
+  enum jieba__mbtoc32be_result mbtoc32be_res;
+  mbtoc32be_res = jieba__mbtoc32bestr(
       word, word_size, c32str_cache, &c32str_cache_size
   );
-  if (res != JIEBA_ADD_WORD_SUCCESS) return res;
+  switch (mbtoc32be_res) {
+  case JIEBA__MBTOC32BE_SUCCESS:
+    break;
+  case JIEBA__MBTOC32BE_BAD_UTF8:
+    return JIEBA_ADD_WORD_BAD_UTF8;
+  case JIEBA__MBTOC32BE_NO_ENOUGH_CHARACTER:
+    return JIEBA_ADD_WORD_NO_ENOUGH_CHARACTER;
+  }
 
   size_t data_base_node_pos;
   res = jieba__find_data_base_node(
@@ -392,4 +729,139 @@ jieba_add_word(
       data_base, &data_base_node_pos
   );
   if (res != JIEBA_ADD_WORD_SUCCESS) return res;
+
+  uint64_t hash = jieba__hash_u32bearr(c32str_cache, c32str_cache_size);
+  size_t cell;
+  int does_change;
+  res = jieba__hash_table_find_or_add_cell(
+      c32str_cache, c32str_cache_size, hash, data_base,
+      &data_base->data_base_nodes[data_base_node_pos].table,
+      &does_change, &cell
+  );
+  if (res != JIEBA_ADD_WORD_SUCCESS) return res;
+  if (!does_change) return JIEBA_ADD_WORD_FAIL_ALREADY_EXISTS;
+
+  return JIEBA_ADD_WORD_SUCCESS;
+}
+
+enum jieba_add_word_result
+jieba_add_word(
+    unsigned char *restrict word, size_t word_size,
+    struct jieba_data_base *restrict data_base
+) {
+  return jieba__add_word(word, word_size, data_base->root);
+}
+
+static int jieba__hash_table_bucket_word_exists(
+    struct jieba__utf32be *word, size_t word_size, uint64_t hash,
+    struct jieba__hash_table_bucket *bucket,
+    struct jieba__hash_table_cell *cells,
+    struct jieba__utf32be *characterp, struct jieba__data_base *data_base
+) {
+  size_t bucket_count = bucket->count;
+  size_t cell_pos = bucket->first_cell_pos;
+  for (size_t i = 0; i < bucket_count; i++) {
+    if (cells[cell_pos].hash == hash &&
+        !memcmp(
+          word,
+          &characterp[cells[cell_pos].string.first_character_pos],
+          sizeof(struct jieba__utf32be) * word_size
+        )
+    )
+    return 1;
+  }
+  return 0;
+}
+
+static int jieba__hash_table_word_exists(
+    struct jieba__utf32be *word, size_t word_size, uint64_t hash,
+    struct jieba__data_base *data_base, struct jieba__hash_table *table,
+    struct jieba__hash_table_node *nodes
+) {
+  size_t idx = hash % table->size;
+  size_t node_idx = idx / JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER;
+  size_t bucket_idx = idx % JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER;
+
+  size_t node_pos = table->first_node_pos;
+  while (node_idx--) {
+    node_pos = nodes[node_pos].next_node_pos;
+  }
+
+  return jieba__hash_table_bucket_word_exists(
+      word, word_size, hash, &nodes[node_pos].buckets[bucket_idx],
+      data_base->hash_table_cells, data_base->characterp, data_base
+  );
+}
+
+static enum jieba_separate_result
+jieba__separate2(
+    const unsigned char *str, size_t strsize, size_t *word_size,
+    struct jieba__data_base *data_base,
+    struct jieba__data_base_node *nodes
+) {
+  struct jieba__utf32be c32strbuf[128];
+
+  if (strsize == 0 || strsize == 1) {
+    *word_size = strsize;
+    return JIEBA_SEPARATE_SUCCESS;
+  }
+
+  size_t first_node_pos = data_base->first_data_base_node_pos;
+  size_t max_word_size = nodes[first_node_pos].n_chinese_letter;
+
+  size_t c32strbuf_count;
+  enum jieba__mbtoc32be_result mbtoc32be_res;
+  mbtoc32be_res = jieba__mbtoc32bestr(
+      str, strsize < max_word_size ? strsize : max_word_size,
+      c32strbuf, &c32strbuf_count
+  );
+  switch (mbtoc32be_res) {
+  case JIEBA__MBTOC32BE_SUCCESS:
+    break;
+  case JIEBA__MBTOC32BE_BAD_UTF8:
+    return JIEBA_SEPARATE_BAD_UTF8;
+  case JIEBA__MBTOC32BE_NO_ENOUGH_CHARACTER:
+    return JIEBA_SEPARATE_NO_ENOUGH_CHARACTER;
+  }
+
+  size_t node_pos = first_node_pos;
+  while (node_pos != (size_t)-1) {
+    size_t word_count = nodes[node_pos].n_chinese_letter;
+
+    if (strsize >= word_count) {
+      uint64_t hash = jieba__hash_u32bearr(c32strbuf, word_count);
+
+      int res = jieba__hash_table_word_exists(
+          c32strbuf, word_count, hash, data_base, &nodes[node_pos].table,
+          data_base->hash_table_nodes
+      );
+      if (res) {
+        *word_size = word_count;
+        return JIEBA_SEPARATE_SUCCESS;
+      } 
+    }
+
+    node_pos = nodes[node_pos].next_node_pos;
+  }
+
+  *word_size = 1;
+  return JIEBA_SEPARATE_SUCCESS;
+}
+
+static enum jieba_separate_result
+jieba__separate(
+    const unsigned char *str, size_t strsize, size_t *word_size,
+    struct jieba__data_base *data_base
+) {
+  return jieba__separate2(
+      str, strsize, word_size, data_base, data_base->data_base_nodes
+  );
+}
+
+enum jieba_separate_result
+jieba_separate(
+    const unsigned char *str, size_t strsize, size_t *word_size,
+    struct jieba_data_base *data_base
+) {
+  return jieba__separate(str, strsize, word_size, data_base->root);
 }
