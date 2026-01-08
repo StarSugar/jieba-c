@@ -12,16 +12,33 @@
          ## __VA_ARGS__)
 # define jieba__assert(...) assert(__VA_ARGS__)
 #else
-# define jibea__log(...)
+# define jieba__log(...)
 # define jieba__assert(...)
 #endif
 
-#define JIEBA_MAX_WORD_LENGTH 32
-#define JIEBA_ASSUME_AVERAGE_WORD_LENGTH 4
-#define JIEBA_ESTIMATED_WORD_COUNT_OFFSET 1024
-#define JIEBA_ESTIMATED_HASH_CELL_COUNT_COEFFICIENT 1.414
-#define JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER 2047
-#define JIEBA_HASH_TABLE_INITIAL_MAX_CELL_PER_BUCKET 8
+#ifndef JIEBA_MAX_WORD_LENGTH
+# define JIEBA_MAX_WORD_LENGTH 32
+#endif
+
+#ifndef JIEBA_ASSUME_AVERAGE_WORD_LENGTH
+# define JIEBA_ASSUME_AVERAGE_WORD_LENGTH 4
+#endif 
+
+#ifndef JIEBA_ESTIMATED_WORD_COUNT_OFFSET
+# define JIEBA_ESTIMATED_WORD_COUNT_OFFSET 1024
+#endif
+
+#ifndef JIEBA_ESTIMATED_HASH_CELL_COUNT_COEFFICIENT
+# define JIEBA_ESTIMATED_HASH_CELL_COUNT_COEFFICIENT 1.414
+#endif 
+
+#ifndef JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER
+# define JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER 2047
+#endif
+
+#ifndef JIEBA_HASH_TABLE_INITIAL_MAX_CELL_PER_BUCKET
+# define JIEBA_HASH_TABLE_INITIAL_MAX_CELL_PER_BUCKET 8
+#endif
 
 struct jieba__utf32be {
   uint8_t data[4];
@@ -58,7 +75,7 @@ struct jieba__hash_table {
 
 struct jieba__data_base_node {
   size_t next_node_pos;
-  int n_chinese_letter;
+  size_t n_chinese_letter;
   struct jieba__hash_table table;
 };
 
@@ -106,6 +123,7 @@ static size_t jieba__init_character_space(
   root->character_space_size = size;
   root->character_space_used = 0;
   root->characterp = whole_memory + whole_memory_used;
+  jieba__log("retain %zu bytes for characters\n", size);
   return size;
 }
 
@@ -131,6 +149,10 @@ static size_t jieba__init_hash_table_cell_space(
   root->hash_table_cell_space_size = size;
   root->hash_table_cell_first_free = 0;
   root->hash_table_cells = whole_memory + whole_memory_used;
+  jieba__log(
+      "retain %zu bytes for %zu hash table cells\n", size,
+      jieba__hash_table_cell_space_count(estimated_word_count)
+  );
   return size;
 }
 
@@ -147,7 +169,8 @@ static size_t jieba__hash_table_node_space_count(size_t estimated_word_count) {
   size_t count;
   count = estimated_word_count + JIEBA_ESTIMATED_WORD_COUNT_OFFSET;
   count *= JIEBA_ESTIMATED_HASH_CELL_COUNT_COEFFICIENT;
-  count /= JIEBA_HASH_TABLE_INITIAL_MAX_CELL_PER_BUCKET;
+  /* this is a bad estimation, since almost no hash table bucket would be fill*/
+  /* count /= JIEBA_HASH_TABLE_INITIAL_MAX_CELL_PER_BUCKET; */
   count = (count + (JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER - 1))
     / JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER;
   count *= 2; /* for hash table extending */
@@ -169,6 +192,10 @@ static size_t jieba__init_hash_table_node_space(
   root->hash_table_node_space_size = size;
   root->hash_table_node_first_free = 0;
   root->hash_table_nodes = whole_memory + whole_memory_used;
+  jieba__log(
+      "retain %zu bytes for %zu hash table nodes\n", size,
+      jieba__hash_table_node_space_count(estimated_word_count)
+  );
   return size;
 }
 
@@ -200,6 +227,10 @@ static size_t jieba__init_data_base_node_space(
   root->data_base_node_space_size = size;
   root->data_base_node_first_free = 0;
   root->data_base_nodes = whole_memory + whole_memory_used;
+  jieba__log(
+      "retain %zu bytes for %zu data base nodes\n", size,
+      jieba__data_base_node_space_count()
+  );
   return size;
 }
 
@@ -256,7 +287,7 @@ jieba_init_data_base(
       whole_memory, whole_memory_used, root
   );
 
-  *required = whole_memory_used;
+  if (required != NULL) *required = whole_memory_used;
   if (whole_memory_used > whole_memory_size) return JIEBA_INIT_FAIL_NOMEM;
 
   /* initialize free lists */
@@ -264,6 +295,9 @@ jieba_init_data_base(
   jieba__init_hash_table_cell_free_list(estimated_word_count, root);
   jieba__init_hash_table_node_free_list(estimated_word_count, root);
   jieba__init_data_base_node_free_list(root);
+
+  /* initialize data base list */
+  root->first_data_base_node_pos = (size_t)-1;
 
   return JIEBA_INIT_SUCCESS;
 }
@@ -370,9 +404,10 @@ static size_t jieba__allocate_data_base_node2(
   if (*data_base_node_first_free == (size_t)-1) return (size_t)-1;
 
   size_t new_pos = *data_base_node_first_free;
+  jieba__assert(new_pos != nodes[new_pos].next_node_pos);
   *data_base_node_first_free = nodes[new_pos].next_node_pos;
 
-  nodes[new_pos].next_node_pos = -1;
+  nodes[new_pos].next_node_pos = (size_t)-1;
   nodes[new_pos].n_chinese_letter = n_chinese_letter;
   jieba__init_hash_table(&nodes[new_pos].table);
 
@@ -396,6 +431,8 @@ static size_t jieba__allocate_data_base_node(
       data_base->data_base_nodes
   );
 
+  jieba__log("data base node %zu is allocated\n", res);
+
   jieba__assert(
       data_base->data_base_node_first_free == (size_t)-1 || (
         0 <= data_base->data_base_node_first_free &&
@@ -418,7 +455,7 @@ jieba__find_data_base_node3(
     jieba__log(
         "allocate data base node due to no exists data base node or, no exists "
         "data base node whoes chinese character number is greater than the "
-        "given one %zu",
+        "given one %zu\n",
         word_size
     );
 
@@ -431,12 +468,13 @@ jieba__find_data_base_node3(
     *data_base_node_pos = new_pos;
     return JIEBA_ADD_WORD_SUCCESS;
   } else {
-    size_t last_pos = *first_data_base_node_pos;
-    size_t pos = nodes[*first_data_base_node_pos].next_node_pos;
+    size_t last_pos = (size_t)-1;
+    size_t pos = *first_data_base_node_pos;
 
-    while (pos != -1 && word_size > nodes[pos].n_chinese_letter) {
+    while (pos != (size_t)-1 && word_size <= nodes[pos].n_chinese_letter) {
       jieba__assert(
-          nodes[pos].n_chinese_letter > nodes[last_pos].n_chinese_letter
+          last_pos == (size_t)-1 ||
+          nodes[pos].n_chinese_letter < nodes[last_pos].n_chinese_letter
       );
 
       if (word_size == nodes[pos].n_chinese_letter) {
@@ -449,7 +487,7 @@ jieba__find_data_base_node3(
 
     jieba__log(
         "allocate data base node due to no corresponding data base "
-        "node whoes chinese letter number equal to the given one %zu",
+        "node whoes chinese letter number equal to the given one %zu\n",
         word_size
     );
 
@@ -458,6 +496,11 @@ jieba__find_data_base_node3(
 
     nodes[new_pos].next_node_pos = pos;
     nodes[last_pos].next_node_pos = new_pos;
+
+    jieba__log(
+        "link data base node %zu at the end of data base node %zu\n", new_pos,
+        last_pos
+    );
 
     *data_base_node_pos = new_pos;
     return JIEBA_ADD_WORD_SUCCESS;
@@ -537,6 +580,7 @@ jieba__allocate_hash_table_nodes2(
     size_t *hash_table_node_first_free, struct jieba__hash_table_node *nodes
 ) {
   if (N == 0) return (size_t)-1;
+  if (*hash_table_node_first_free == -1) return (size_t)-1;
 
   size_t new_pos = *hash_table_node_first_free;
   size_t last_pos = new_pos;
@@ -619,7 +663,7 @@ jieba__allocate_hash_table_cell2(
   if (*hash_table_cell_first_free == (size_t)-1) return -1;
 
   size_t new_pos = *hash_table_cell_first_free;
-  data_base->data_base_node_first_free = cells[new_pos].next_cell_pos;
+  data_base->hash_table_cell_first_free = cells[new_pos].next_cell_pos;
 
   cells[new_pos].next_cell_pos = -1;
   cells[new_pos].hash = 0;
@@ -667,7 +711,7 @@ static int jieba__init_and_allocate_string(
     struct jieba__data_base *data_base, struct jieba__string *string
 ) {
   size_t new_size = contents_size + data_base->character_space_used;
-  if (new_size < data_base->character_space_size)
+  if (new_size > data_base->character_space_size)
     return -1;
   size_t strpos = data_base->character_space_used;
   data_base->character_space_used += contents_size;
@@ -736,7 +780,7 @@ jieba__hash_table_extend(
     struct jieba__hash_table *table, struct jieba__data_base *data_base,
     struct jieba__hash_table_node *nodes
 ) {
-  jieba__log("hash table extended");
+  jieba__log("hash table extended\n");
 
   size_t original_size = table->size;
   size_t size;
@@ -754,7 +798,7 @@ jieba__hash_table_extend(
     / JIEBA_HASH_TABLE_NODE_BUCKET_NUMBER;
   size_t new_pos = jieba__allocate_hash_table_nodes(node_number, data_base);
   if (new_pos == (size_t)-1) {
-    jieba__log("hash table extending fail since no enough hash table nodes");
+    jieba__log("hash table extending fail since no enough hash table nodes\n");
     return -1;
   }
   
@@ -787,6 +831,7 @@ int jieba__ensure_hash_table_has_node(
     struct jieba__hash_table *table, struct jieba__data_base *data_base
 ) {
   if (table->size == 0) {
+    jieba__log("allocated hash node for empty hash table\n");
     table->count = 0;
     table->size = jieba__hash_table_sizes[0];
     size_t new_pos = jieba__allocate_hash_table_nodes(1, data_base);
@@ -859,6 +904,11 @@ jieba__bucket_find_or_add_cell(
     jieba__assert(a_cell_pos == (size_t)-1);
 
     if (bucket->count == table->max_cell_per_bucket) {
+      jieba__log(
+          "hash table %p bucket %p is fill"
+          ", try extending or increase bucket size\n",
+          table, bucket
+      );
       if (tried_times == 0)
         return JIEBA__BUCKET_FIND_OR_ADD_CELL_FAIL_NEED_EXTEND;
       else
@@ -939,8 +989,14 @@ jieba__hash_table_find_or_add_cell(
     tried_times += 1;
     jieba__assert(tried_times <= 1);
 
-    if (need_extend)
-      jieba__hash_table_extend(table, data_base, data_base->hash_table_nodes);
+    if (need_extend) {
+      size_t res = jieba__hash_table_extend(
+          table, data_base, data_base->hash_table_nodes
+      );
+      if (res != 0) {
+        return JIEBA_ADD_WORD_FAIL_NOMEM;
+      }
+    }
   }
 }
 
@@ -949,11 +1005,11 @@ jieba__add_word(
     unsigned char *restrict word, size_t word_size,
     struct jieba__data_base *restrict data_base
 ) {
-  struct jieba__utf32be c32str_cache[128];
+  jieba__log("adding %s\n", word);
+
+  static struct jieba__utf32be c32str_cache[128];
   size_t c32str_cache_size = 0;
   enum jieba_add_word_result res;
-
-  if (word_size == 0 || word_size == 1) return JIEBA_ADD_WORD_SUCCESS;
 
   enum jieba__mbtoc32be_result mbtoc32be_res;
   mbtoc32be_res = jieba__mbtoc32bestr(
@@ -968,8 +1024,16 @@ jieba__add_word(
     return JIEBA_ADD_WORD_NO_ENOUGH_CHARACTER;
   }
 
+  if (c32str_cache_size == 0 || c32str_cache_size == 1)
+    return JIEBA_ADD_WORD_SUCCESS;
+
+  if (c32str_cache_size > JIEBA_MAX_WORD_LENGTH)
+    return JIEBA_ADD_WORD_FAIL_TOO_LONG;
+
   size_t data_base_node_pos;
-  res = jieba__find_data_base_node(word_size, data_base, &data_base_node_pos);
+  res = jieba__find_data_base_node(
+      c32str_cache_size, data_base, &data_base_node_pos
+  );
   if (res != JIEBA_ADD_WORD_SUCCESS) return res;
 
   uint64_t hash = jieba__hash_u32bearr(c32str_cache, c32str_cache_size);
