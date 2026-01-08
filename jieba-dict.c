@@ -56,7 +56,7 @@ void init_jieba_dict(void) {
       exit(-1);
     case JIEBA_ADD_WORD_FAIL_ALREADY_EXISTS:
       fprintf(
-          stderr, "WARNING: word presents multiple times in the dictionary\n",
+          stderr, "WARNING: word %s presents multiple times in the dictionary\n",
           jieba_dict[i]
       );
       break;
