@@ -1059,63 +1059,6 @@ jieba_add_word(
   return jieba__add_word(word, word_size, data_base->root);
 }
 
-#ifdef JIEBA__DEBUG
-static size_t
-c32betomb(struct jieba__utf32be inchar, uint8_t out[4])
-{
-  uint8_t *in = &inchar.data[0];
-  uint32_t cp =
-    ((uint32_t)in[0] << 24) |
-    ((uint32_t)in[1] << 16) |
-    ((uint32_t)in[2] << 8)  |
-    ((uint32_t)in[3]);
-
-  if (cp <= 0x7F) {
-    out[0] = (uint8_t)cp;
-    return 1;
-  }
-
-  if (cp <= 0x7FF) {
-    out[0] = 0xC0 | (cp >> 6);
-    out[1] = 0x80 | (cp & 0x3F);
-    return 2;
-  }
-
-  if (cp <= 0xFFFF) {
-    out[0] = 0xE0 | (cp >> 12);
-    out[1] = 0x80 | ((cp >> 6) & 0x3F);
-    out[2] = 0x80 | (cp & 0x3F);
-    return 3;
-  }
-
-  out[0] = 0xF0 | (cp >> 18);
-  out[1] = 0x80 | ((cp >> 12) & 0x3F);
-  out[2] = 0x80 | ((cp >> 6) & 0x3F);
-  out[3] = 0x80 | (cp & 0x3F);
-  return 4;
-}
-
-static size_t
-c32bestrtomb(
-    struct jieba__utf32be *instr, size_t in_len, char *out
-) {
-  size_t whole_size = 0;
-  for (size_t i = 0; i < in_len; i++) {
-    size_t size = c32betomb(instr[i], (uint8_t *)out);
-    out += size;
-    whole_size += size;
-  }
-  return whole_size;
-}
-
-static void print_word(char *str, size_t n) {
-  for (size_t i = 0; i < n; i++) {
-    putchar(str[i]);
-  }
-  puts("");
-}
-#endif
-
 static int jieba__hash_table_bucket_word_exists(
     struct jieba__utf32be *word, size_t word_size, uint64_t hash,
     struct jieba__hash_table_bucket *bucket,
@@ -1125,12 +1068,6 @@ static int jieba__hash_table_bucket_word_exists(
   size_t bucket_count = bucket->count;
   size_t cell_pos = bucket->first_cell_pos;
   for (size_t i = 0; i < bucket_count; i++) {
-    /*
-    char buf[1024];
-    size_t mbsiz = c32bestrtomb(word, word_size, buf);
-    jieba__log("compare string\n");
-    print_word(buf, mbsiz);
-    */
     if (cells[cell_pos].hash == hash &&
         !memcmp(
           word,
