@@ -1,4 +1,6 @@
-# FILEs
+# README
+
+## FILEs
 README.md -- this file
 dict-len.h -- list of length of words, used in jieba-dict.c
 dict.h -- list of words, used in jieba-dict.c
@@ -15,9 +17,9 @@ make-on-unix.sh -- make libjieba.so and libjieba-dict.so on linux and freebsd
 primes.lisp -- generate some primes used in jieba.c
 wyhash.h -- the hash function implementation, copied from https://github.com/wangyi-fudan/wyhash 
 
-# APIs
+## APIs
 There are two sets of APIs.
 
-## libjieba-dict
+### libjieba-dict
 
-## libjieba
+### libjieba
