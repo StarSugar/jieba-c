@@ -46,7 +46,7 @@ To use libjieba-dict, you should include both jieba.h and jieba-dict.h.
 void init_jieba_dict(void);
 ```
 
-Initialization function. This should be called before any other functions.
+Initialization function. This should be called before `jieba_dict_separate`.
 
 ``` c
 enum jieba_separate_result
