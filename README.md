@@ -18,7 +18,7 @@
 + wyhash.h -- the hash function implementation, copied from https://github.com/wangyi-fudan/wyhash 
 
 ## APIs
-There are two sets of APIs.
+There are two sets of APIs. libjieba enable you maintain the dictionary yourself, and libjieba-dict helps you through a existing dictionary.
 
 Here are some macros you may interest, they influence the compilation of jieba.c, the main file of the libraries.
 
