@@ -20,6 +20,112 @@
 ## APIs
 There are two sets of APIs.
 
+Here are some macros you may interest, they influence the compilation of jieba.c, the main file of the libraries.
+
+``` c
+#define JIEBA_MAX_WORD_LENGTH 32
+#define JIEBA_ASSUME_AVERAGE_WORD_LENGTH 4
+#define JIEBA_ESTIMATED_WORD_COUNT_OFFSET 1024
+#define JIEBA_ESTIMATED_HASH_CELL_COUNT_COEFFICIENT 1.414
+#define JIEBA_HASH_TABLE_INITIAL_MAX_CELL_PER_BUCKET 8
+```
+
+- JIEBA_MAX_WORD_LENGTH, max word length the library support,
+- JIEBA_ASSUME_AVERAGE_WORD_LENGTH, average word length you estimated,
+- JIEBA_ESTIMATED_WORD_COUNT_OFFSET, a estimated word number redundancy which you believe it makes sence,
+- JIEBA_ESTIMATED_HASH_CELL_COUNT_COEFFICIENT, if the JIEBA_ASSUME_AVERAGE_WORD_LENGTH is not believed, you could give a larger coefficient to get more hash table cell redundancy,
+- JIEBA_HASH_TABLE_INITIAL_MAX_CELL_PER_BUCKET, the initialization hash table max cells number per bucket.
+
 ### libjieba-dict
 
+To use libjieba-dict, you should include both jieba.h and jieba-dict.h.
+
+#### FUNCTIONS
+
+``` c
+void init_jieba_dict(void);
+```
+
+Initialization function. This should be called before any other functions.
+
+``` c
+enum jieba_separate_result
+jieba_dict_separate(
+    const unsigned char *str, size_t strsize, size_t *word_size
+);
+```
+
+Separates string `str` and give out a possible word length by `word_size`. See below for `enum jieba_separate_result`.
+
 ### libjieba
+
+``` c
+struct jieba_data_base;
+```
+
+Main data base for the library.
+
+``` c
+enum jieba_init_result {
+  JIEBA_INIT_SUCCESS,
+  JIEBA_INIT_FAIL_NOMEM
+};
+
+enum jieba_init_result jieba_init_data_base(
+    struct jieba_data_base *restrict data_base, void *restrict whole_memory,
+    size_t whole_memory_size, size_t estimated_word_count, size_t *required
+);
+```
+
+libjieba would not request any heap memory itself, instead you should allocate for it from either heap, stack or data section, no matter where it is from, we suggest data section though.
+
+To tell libjieba how much memory and where is the memory it could use, call `jieba_init_data_base` function. `data_base` is a pointer point to allocated `struct data_base`, which could be a simple stack value. The memory libjieba could use should be passed as `whole_memory` and its size is `whole_memory_size`. You should also give a estimated word number by passing `estimated_word_count`, the function will determine whether the `whole_memory` is large enough, and no matter it is enough or not, a required `whole_memory` size would be replied by `required`.
+
+``` c
+size_t jieba_estimate_memory_size(size_t estimated_word_count);
+```
+
+You would like to know how much memory required for a estimated word number to a `struct jieba_data_base`, of course you could call `jieba_init_data_base` and check the `required`, but you could also call this functon.
+
+``` c
+enum jieba_add_word_result {
+  JIEBA_ADD_WORD_SUCCESS,
+  JIEBA_ADD_WORD_FAIL_TOO_LONG,
+  JIEBA_ADD_WORD_FAIL_NOMEM,
+  JIEBA_ADD_WORD_FAIL_ALREADY_EXISTS,
+  JIEBA_ADD_WORD_NO_ENOUGH_CHARACTER,
+  JIEBA_ADD_WORD_BAD_UTF8
+};
+
+enum jieba_add_word_result
+jieba_add_word(
+    unsigned char *restrict word, size_t word_size,
+    struct jieba_data_base *restrict data_base
+);
+```
+
+To add a word into the data base, you could call this function, pass a `word` and its size `word_size` to the function.
+
+The function may return some annoying errors, here are their meaning:
+- JIEBA_ADD_WORD_SUCCESS means success, of cource,
+- JIEBA_ADD_WORD_FAIL_TOO_LONG means the word is too long for the library,
+- JIEBA_ADD_WORD_FAIL_NOMEM means the data base has no enough memory for the word,
+- JIEBA_ADD_WORD_FAIL_ALREADY_EXISTS means the word is already exist, this is ignorable,
+- JIEBA_ADD_WORD_NO_ENOUGH_CHARACTER means the given word lacks bytes to encode a legal utf 8 character.
+- JIEBA_ADD_WORD_BAD_UTF8 means the given word contains illegal utf 8 code.
+
+``` c
+enum jieba_separate_result {
+  JIEBA_SEPARATE_SUCCESS,
+  JIEBA_SEPARATE_NO_ENOUGH_CHARACTER,
+  JIEBA_SEPARATE_BAD_UTF8
+};
+
+enum jieba_separate_result
+jieba_separate(
+    const unsigned char *str, size_t strsize, size_t *word_size,
+    struct jieba_data_base *data_base
+);
+```
+
+You could separate a string with `jieba_separate`, you pass the string as `str` and `strsize`, it will give you the result through `word_size`. The value `jieba_separate` returns is similar to `jieba_add_word`.
