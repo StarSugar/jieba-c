@@ -16,12 +16,12 @@ enum jieba_init_result {
   JIEBA_INIT_FAIL_NOMEM
 };
 
-size_t jieba_estimate_memory_size(size_t estimated_word_count);
-
 enum jieba_init_result jieba_init_data_base(
     struct jieba_data_base *restrict data_base, void *restrict whole_memory,
     size_t whole_memory_size, size_t estimated_word_count, size_t *required
 );
+
+size_t jieba_estimate_memory_size(size_t estimated_word_count);
 
 enum jieba_add_word_result {
   JIEBA_ADD_WORD_SUCCESS,
